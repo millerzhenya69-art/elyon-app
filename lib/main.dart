@@ -1,0 +1,138 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'theme/app_theme.dart';
+import 'models/app_settings.dart';
+import 'providers/app_providers.dart';
+import 'services/storage_service.dart';
+import 'services/windows_services.dart';
+import 'screens/auth_screen.dart';
+import 'screens/main_screen.dart';
+import 'screens/splash_screen.dart';
+import 'widgets/app_window_shell.dart';
+
+// Conditional import: реальный window_manager на десктопе, stub на Android
+import 'package:window_manager/window_manager.dart'
+    if (dart.library.js_interop) 'stubs/window_manager_stub.dart'
+    if (dart.library.js) 'stubs/window_manager_stub.dart';
+
+export 'stubs/window_manager_stub.dart' show WindowListener;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isWindows) {
+    await WindowsServices.init();
+  }
+
+  final storage = StorageService();
+  await storage.init();
+
+  final savedSettings = await storage.loadSettings();
+  final savedUser     = await storage.loadUser();
+  final savedSessions = await storage.loadSessions();
+
+  runApp(ProviderScope(
+    overrides: [storageServiceProvider.overrideWithValue(storage)],
+    child: ElyonApp(
+      initialSettings: savedSettings,
+      initialUser:     savedUser,
+      initialSessions: savedSessions,
+    ),
+  ));
+}
+
+class ElyonApp extends ConsumerStatefulWidget {
+  const ElyonApp({super.key,
+    required this.initialSettings,
+    required this.initialUser,
+    required this.initialSessions,
+  });
+  final AppSettings initialSettings;
+  final dynamic initialUser;
+  final dynamic initialSessions;
+
+  @override
+  ConsumerState<ElyonApp> createState() => _ElyonAppState();
+}
+
+class _ElyonAppState extends ConsumerState<ElyonApp> with WindowListener {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  bool _showSplash = true;
+
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isWindows) {
+      windowManager.addListener(this);
+      windowManager.setPreventClose(true);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(settingsProvider.notifier).load(widget.initialSettings);
+      if (widget.initialUser != null) {
+        ref.read(userProvider.notifier).setUser(widget.initialUser!);
+        Future.microtask(() async {
+          final authService = ref.read(authServiceProvider);
+          final updated = await authService.syncUserFromServer(widget.initialUser!);
+          if (updated != null && mounted) {
+            ref.read(userProvider.notifier).setUser(updated);
+          }
+        });
+      }
+      if (widget.initialSessions != null) {
+        ref.read(sessionsProvider.notifier).load(widget.initialSessions!);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    if (Platform.isWindows) {
+      windowManager.removeListener(this);
+      WindowsServices().dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Future<void> onWindowClose() async {
+    if (Platform.isWindows) await WindowsServices().onWindowClose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeMode = ref.watch(themeModeProvider);
+    final fontSize  = ref.watch(settingsProvider).fontSize;
+    final user      = ref.watch(userProvider);
+
+    final theme = switch (themeMode) {
+      AppThemeMode.dark   => AppTheme.dark(),
+      AppThemeMode.amoled => AppTheme.amoled(),
+      AppThemeMode.light  => AppTheme.light(),
+    };
+
+    return MaterialApp(
+      title: 'Elyon AI',
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      navigatorKey: _navigatorKey,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(
+          textScaler: TextScaler.linear(fontSize.scale),
+        ),
+        child: AppWindowShell(child: child!),
+      ),
+      home: _showSplash
+          ? SplashScreen(onFinished: () {
+              final route = user != null ? '/app' : '/auth';
+              _navigatorKey.currentState?.pushReplacementNamed(route);
+              setState(() => _showSplash = false);
+            })
+          : (user != null ? const MainScreen() : const AuthScreen()),
+      routes: {
+        '/auth': (_) => const AuthScreen(),
+        '/app':  (_) => const MainScreen(),
+      },
+    );
+  }
+}

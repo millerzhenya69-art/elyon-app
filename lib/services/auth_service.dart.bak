@@ -1,0 +1,210 @@
+import 'dart:convert';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
+import '../models/user_model.dart';
+import '../services/storage_service.dart';
+
+const String _kBaseUrl = 'https://elyon-bot.onrender.com';
+
+// ── Provider ─────────────────────────────────────────────────────
+
+final authServiceProvider = Provider<AuthService>((ref) {
+  final storage = ref.read(storageServiceProvider);
+  return AuthService(storage: storage);
+});
+
+// ── Error types ───────────────────────────────────────────────────
+
+enum AuthErrorType {
+  invalidCredentials,
+  emailTaken,
+  needsVerification,
+  tokenExpired,
+  networkError,
+  serverError,
+}
+
+class AuthException implements Exception {
+  const AuthException(this.type, this.message);
+  final AuthErrorType type;
+  final String message;
+
+  @override
+  String toString() => 'AuthException(${type.name}): $message';
+}
+
+// ── Service ───────────────────────────────────────────────────────
+
+class AuthService {
+  AuthService({http.Client? client, required this.storage})
+      : _client = client ?? http.Client();
+
+  final http.Client _client;
+  final StorageService storage;
+
+  // ── Email / Password ─────────────────────────────────────────
+
+  Future<AppUser> signInWithEmail({
+    required String email,
+    required String password,
+    String firstName = '',
+    String lastName  = '',
+    bool signUp = false,
+  }) async {
+    final body = {
+      'action':     signUp ? 'signup' : 'signin',
+      'email':      email,
+      'password':   password,
+      if (signUp) 'first_name': firstName,
+      if (signUp) 'last_name':  lastName,
+    };
+
+    final response = await _client
+        .post(
+          Uri.parse('$_kBaseUrl/api/auth/email'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    if (response.statusCode == 200 && data['ok'] == true) {
+      if (data['verify'] == true) {
+        throw const AuthException(
+            AuthErrorType.needsVerification,
+            'Please verify your email before signing in.');
+      }
+      final user = _parseUser(data['user'] as Map<String, dynamic>);
+      await _saveSession(user);
+      return user;
+    } else if (response.statusCode == 409) {
+      throw const AuthException(
+          AuthErrorType.emailTaken, 'Email already registered. Sign in instead.');
+    } else if (response.statusCode == 401) {
+      throw const AuthException(
+          AuthErrorType.invalidCredentials, 'Invalid email or password.');
+    } else {
+      throw AuthException(AuthErrorType.serverError,
+          data['error']?.toString() ?? 'Something went wrong.');
+    }
+  }
+
+  // ── Telegram Token ───────────────────────────────────────────
+
+  /// User sends /auth to the bot → bot sends a magic link containing a
+  /// short-lived token → user copies token → we verify it here.
+  Future<AppUser> signInWithTelegramToken(String token) async {
+    final response = await _client
+        .post(
+          Uri.parse('$_kBaseUrl/api/auth/telegram_token'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'token': token}),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+
+    if (response.statusCode == 200 && data['ok'] == true) {
+      final user = _parseUser(data['user'] as Map<String, dynamic>);
+      await _saveSession(user);
+      return user;
+    } else if (response.statusCode == 401) {
+      throw AuthException(
+          AuthErrorType.tokenExpired,
+          data['error']?.toString() ??
+              'Token expired or already used. Send /auth again.');
+    } else {
+      throw AuthException(AuthErrorType.serverError,
+          data['error']?.toString() ?? 'Telegram sign-in failed.');
+    }
+  }
+
+  // ── Google OAuth ──────────────────────────────────────────────
+
+  /// Opens Google login in the browser.
+  /// On Windows: opens auth.html URL which redirects with access_token in
+  /// the fragment → the user copies the token → we verify via /api/auth/google_profile.
+  ///
+  /// For a full native Google sign-in flow, you'd add
+  /// google_sign_in plugin; this is the lightweight version.
+  Future<AppUser> signInWithGoogle() async {
+    // We open the web auth page which already handles Google OAuth correctly.
+    final uri = Uri.parse(
+        'https://elyon-ai-web.vercel.app/auth.html?desktop=1');
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      throw const AuthException(
+          AuthErrorType.networkError, 'Could not open browser.');
+    }
+    // Desktop OAuth is async — in a real flow we'd use a deep link or
+    // local redirect server. For now throw to let the UI fall back to
+    // Telegram or email.
+    throw const AuthException(
+        AuthErrorType.networkError,
+        'Sign in via the browser page, then use Telegram token to sign in here.');
+  }
+
+  // ── Restore session ──────────────────────────────────────────
+
+  Future<AppUser?> restoreSession() async {
+    return storage.loadUser();
+  }
+
+  // ── Sign out ─────────────────────────────────────────────────
+
+  Future<void> signOut() async {
+    await storage.clearUser();
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────
+
+  AppUser _parseUser(Map<String, dynamic> json) {
+    final userId   = json['user_id']?.toString() ?? '';
+    final email    = json['email']?.toString() ?? '';
+    final fname    = json['first_name']?.toString() ?? '';
+    final lname    = json['last_name']?.toString() ?? '';
+    final avatar   = json['avatar']?.toString();
+    final provider = json['provider']?.toString() ?? 'email';
+    final username = json['username']?.toString() ?? '';
+    final subType  = json['sub_type']?.toString() ?? 'none';
+
+    // Map backend sub_type → SubscriptionTier
+    final tier = _parseTier(subType);
+
+    final displayName = [fname, lname].where((s) => s.isNotEmpty).join(' ').isNotEmpty
+        ? [fname, lname].where((s) => s.isNotEmpty).join(' ')
+        : (username.isNotEmpty ? username : email.split('@').first);
+
+    return AppUser(
+      id:               userId,
+      email:            email,
+      displayName:      displayName,
+      avatarUrl:        (avatar?.isNotEmpty ?? false) ? avatar : null,
+      tier:             tier,
+      messagesUsedToday: 0,
+      isOwner:          false,
+      authProvider:     provider,
+      joinedAt:         DateTime.now(),
+    );
+  }
+
+  SubscriptionTier _parseTier(String subType) {
+    switch (subType) {
+      case 'nova':
+      case 'month':
+        return SubscriptionTier.nova;
+      case 'pro':
+        return SubscriptionTier.pro;
+      case 'absolution':
+      case 'forever':
+        return SubscriptionTier.absolution;
+      default:
+        return SubscriptionTier.core;
+    }
+  }
+
+  Future<void> _saveSession(AppUser user) async {
+    await storage.saveUser(user);
+  }
+}

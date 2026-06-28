@@ -7,54 +7,56 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Android APK ─────────────────────────────────────────────────
+  # ── Android APK ──────────────────────────────────────────────────
   build-android:
     name: Android APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.32.0'
           channel: stable
           cache: true
-
-      - name: Add Android platform
-        run: flutter create --platforms=android . || true
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build APK (release)
-        run: flutter build apk --release --split-per-abi
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - run: flutter pub get
+      - run: flutter create --platforms=android . 2>/dev/null || true
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
+      - name: Build APK arm64 (64-bit, modern devices)
+        run: flutter build apk --release --target-platform android-arm64
+      - name: Build APK arm32 (32-bit, Galaxy J4 and older)
+        run: flutter build apk --release --target-platform android-arm
+      - uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: android-apk-arm64
           path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-arm32
+          path: build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
 
-  # ── Linux .deb + AppImage ────────────────────────────────────────
+  # ── Linux ─────────────────────────────────────────────────────────
   build-linux:
-    name: Linux AppImage
-    runs-on: ubuntu-latest
+    name: Linux Bundle
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
+      - name: Install Linux build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
             clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libstdc++-12-dev \
-            libayatana-appindicator3-dev \
-            fuse libfuse2 appstream
+            libgtk-3-dev liblzma-dev \
+            libsecret-1-dev libsecret-1-0 \
+            libjsoncpp-dev libglib2.0-dev
+
+      - name: Verify libsecret pkg-config
+        run: pkg-config --modversion libsecret-1 && echo "libsecret OK"
 
       - uses: subosito/flutter-action@v2
         with:
@@ -62,44 +64,24 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Add Linux platform
-        run: flutter create --platforms=linux . || true
+      - run: flutter pub get
+      - run: flutter create --platforms=linux . 2>/dev/null || true
+      - run: flutter build linux --release
 
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build Linux
-        run: flutter build linux --release
-
-      - name: Package AppImage
+      - name: Package tar.gz
         run: |
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-          cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
-          cat > AppDir/usr/share/applications/elyon-ai.desktop << 'EOF'
-          [Desktop Entry]
-          Name=Elyon AI
-          Exec=elyon_app
-          Icon=elyon-ai
-          Type=Application
-          Categories=Utility;
-          EOF
-          cp assets/elyon_logo.png AppDir/usr/share/icons/hicolor/256x256/apps/elyon-ai.png 2>/dev/null || true
-          cp AppDir/usr/share/applications/elyon-ai.desktop AppDir/
-          cp AppDir/usr/share/icons/hicolor/256x256/apps/elyon-ai.png AppDir/ 2>/dev/null || true
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          chmod +x appimagetool
-          ARCH=x86_64 ./appimagetool AppDir elyon-ai-linux.AppImage
+          cd build/linux/x64/release/bundle
+          tar -czf ../../../../../elyon-ai-linux.tar.gz .
 
-      - name: Upload AppImage
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: linux-appimage
-          path: elyon-ai-linux.AppImage
+          name: linux-bundle
+          path: elyon-ai-linux.tar.gz
 
-  # ── macOS .dmg ───────────────────────────────────────────────────
+  # ── macOS DMG ─────────────────────────────────────────────────────
   build-macos:
     name: macOS DMG
-    runs-on: macos-latest
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
 
@@ -109,30 +91,36 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Add macOS platform
-        run: flutter create --platforms=macos . || true
+      - run: flutter pub get
+      - run: flutter create --platforms=macos . 2>/dev/null || true
+      - run: flutter build macos --release
 
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build macOS
-        run: flutter build macos --release
+      - name: Find .app path
+        run: |
+          echo "=== Contents of Release folder ==="
+          ls build/macos/Build/Products/Release/ 2>/dev/null || echo "Release folder not found"
+          echo "=== All .app files ==="
+          find build/macos -name "*.app" -maxdepth 8 2>/dev/null || echo "No .app found"
 
       - name: Package DMG
         run: |
-          APP_PATH="build/macos/Build/Products/Release/elyon_app.app"
-          hdiutil create -volname "Elyon AI" \
-            -srcfolder "$APP_PATH" \
+          APP=$(find build/macos -name "*.app" -maxdepth 8 | grep -v "\.app/" | head -1)
+          echo "Using: $APP"
+          if [ -z "$APP" ]; then
+            echo "ERROR: No .app found"; exit 1
+          fi
+          hdiutil create \
+            -volname "Elyon AI" \
+            -srcfolder "$APP" \
             -ov -format UDZO \
             elyon-ai-macos.dmg
 
-      - name: Upload DMG
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
           path: elyon-ai-macos.dmg
 
-  # ── Release: собираем все артефакты в один релиз ─────────────────
+  # ── Release ───────────────────────────────────────────────────────
   release:
     name: Publish Release
     needs: [build-android, build-linux, build-macos]
@@ -141,27 +129,22 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/android-apk/app-arm64-v8a-release.apk
-            artifacts/linux-appimage/elyon-ai-linux.AppImage
+            artifacts/android-apk-arm64/app-arm64-v8a-release.apk
+            artifacts/android-apk-arm32/app-armeabi-v7a-release.apk
+            artifacts/linux-bundle/elyon-ai-linux.tar.gz
             artifacts/macos-dmg/elyon-ai-macos.dmg
           name: Elyon AI ${{ github.ref_name }}
           body: |
             ## Elyon AI ${{ github.ref_name }}
-
-            ### Downloads
-            | Platform | File |
-            |---|---|
-            | 🤖 Android | `app-arm64-v8a-release.apk` |
-            | 🐧 Linux | `elyon-ai-linux.AppImage` |
-            | 🍎 macOS | `elyon-ai-macos.dmg` |
-
-            Windows билд доступен отдельно.
+            | Platform | File | Устройства |
+            |---|---|---|
+            | 🤖 Android 64-bit | `app-arm64-v8a-release.apk` | Android 5.0+, современные устройства |
+            | 🤖 Android 32-bit | `app-armeabi-v7a-release.apk` | Старые устройства (Galaxy J4 и др.) |
+            | 🐧 Linux | `elyon-ai-linux.tar.gz` | Распакуй и запусти `elyon_app` |
+            | 🍎 macOS | `elyon-ai-macos.dmg` | macOS 10.14+ |

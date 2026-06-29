@@ -13,33 +13,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.32.0'
           channel: stable
           cache: true
-      - run: flutter pub get
-      - run: flutter create --platforms=android . 2>/dev/null || true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Add Android platform
+        run: flutter create --platforms=android . 2>/dev/null || true
+
       - name: Generate launcher icons
-        run: dart run flutter_launcher_icons
-      - name: Build APK arm64 (64-bit, modern devices)
-        run: flutter build apk --release --target-platform android-arm64
-      - name: Build APK arm32 (32-bit, Galaxy J4 and older)
-        run: flutter build apk --release --target-platform android-arm
-      - uses: actions/upload-artifact@v4
+        run: dart run flutter_launcher_icons || echo "Icons generation skipped"
+
+      # --split-per-abi builds arm32, arm64, x86_64 in one command
+      - name: Build APKs (all ABIs)
+        run: flutter build apk --release --split-per-abi
+
+      - name: List APK outputs
+        run: ls -lh build/app/outputs/flutter-apk/
+
+      - name: Upload arm64 APK (modern devices)
+        uses: actions/upload-artifact@v4
         with:
           name: android-apk-arm64
           path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload arm32 APK (Galaxy J4 and older)
+        uses: actions/upload-artifact@v4
         with:
           name: android-apk-arm32
           path: build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
 
-  # ── Linux ─────────────────────────────────────────────────────────
+  # ── Linux Bundle ─────────────────────────────────────────────────
   build-linux:
     name: Linux Bundle
     runs-on: ubuntu-22.04
@@ -55,8 +69,10 @@ jobs:
             libsecret-1-dev libsecret-1-0 \
             libjsoncpp-dev libglib2.0-dev
 
-      - name: Verify libsecret pkg-config
-        run: pkg-config --modversion libsecret-1 && echo "libsecret OK"
+      - name: Verify libsecret
+        run: |
+          pkg-config --modversion libsecret-1
+          dpkg -L libsecret-1-dev | grep '\.pc$'
 
       - uses: subosito/flutter-action@v2
         with:
@@ -64,9 +80,16 @@ jobs:
           channel: stable
           cache: true
 
-      - run: flutter pub get
-      - run: flutter create --platforms=linux . 2>/dev/null || true
-      - run: flutter build linux --release
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Add Linux platform
+        run: flutter create --platforms=linux . 2>/dev/null || true
+
+      - name: Build Linux release
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+        run: flutter build linux --release
 
       - name: Package tar.gz
         run: |
@@ -81,7 +104,8 @@ jobs:
   # ── macOS DMG ─────────────────────────────────────────────────────
   build-macos:
     name: macOS DMG
-    runs-on: macos-13
+    runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -91,29 +115,26 @@ jobs:
           channel: stable
           cache: true
 
-      - run: flutter pub get
-      - run: flutter create --platforms=macos . 2>/dev/null || true
-      - run: flutter build macos --release
+      - name: Get dependencies
+        run: flutter pub get
 
-      - name: Find .app path
+      - name: Add macOS platform
+        run: flutter create --platforms=macos . 2>/dev/null || true
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Find and list .app
         run: |
-          echo "=== Contents of Release folder ==="
-          ls build/macos/Build/Products/Release/ 2>/dev/null || echo "Release folder not found"
-          echo "=== All .app files ==="
-          find build/macos -name "*.app" -maxdepth 8 2>/dev/null || echo "No .app found"
+          find build/macos -name "*.app" -maxdepth 8 | grep -v "\.app/" | head -5
+          ls build/macos/Build/Products/Release/ 2>/dev/null || true
 
       - name: Package DMG
         run: |
           APP=$(find build/macos -name "*.app" -maxdepth 8 | grep -v "\.app/" | head -1)
-          echo "Using: $APP"
-          if [ -z "$APP" ]; then
-            echo "ERROR: No .app found"; exit 1
-          fi
-          hdiutil create \
-            -volname "Elyon AI" \
-            -srcfolder "$APP" \
-            -ov -format UDZO \
-            elyon-ai-macos.dmg
+          echo "App: $APP"
+          [ -z "$APP" ] && exit 1
+          hdiutil create -volname "Elyon AI" -srcfolder "$APP" -ov -format UDZO elyon-ai-macos.dmg
 
       - uses: actions/upload-artifact@v4
         with:
@@ -132,6 +153,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -142,9 +164,9 @@ jobs:
           name: Elyon AI ${{ github.ref_name }}
           body: |
             ## Elyon AI ${{ github.ref_name }}
-            | Platform | File | Устройства |
+            | Platform | File | Devices |
             |---|---|---|
-            | 🤖 Android 64-bit | `app-arm64-v8a-release.apk` | Android 5.0+, современные устройства |
-            | 🤖 Android 32-bit | `app-armeabi-v7a-release.apk` | Старые устройства (Galaxy J4 и др.) |
-            | 🐧 Linux | `elyon-ai-linux.tar.gz` | Распакуй и запусти `elyon_app` |
+            | 🤖 Android 64-bit | `app-arm64-v8a-release.apk` | Android 5+, modern devices |
+            | 🤖 Android 32-bit | `app-armeabi-v7a-release.apk` | Older devices (Galaxy J4 etc) |
+            | 🐧 Linux | `elyon-ai-linux.tar.gz` | Extract and run `elyon_app` |
             | 🍎 macOS | `elyon-ai-macos.dmg` | macOS 10.14+ |

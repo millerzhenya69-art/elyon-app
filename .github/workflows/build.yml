@@ -67,7 +67,8 @@ jobs:
             clang cmake ninja-build pkg-config \
             libgtk-3-dev liblzma-dev \
             libsecret-1-dev libsecret-1-0 \
-            libjsoncpp-dev libglib2.0-dev
+            libjsoncpp-dev libglib2.0-dev \
+            libkeybinder-3.0-dev
 
       - name: Verify libsecret
         run: |

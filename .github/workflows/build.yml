@@ -103,6 +103,40 @@ jobs:
           name: linux-bundle
           path: elyon-ai-linux.tar.gz
 
+  # ── Windows Build ────────────────────────────────────────────
+  build-windows:
+    name: Windows Build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.0'
+          channel: stable
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Add Windows platform
+        run: flutter create --platforms=windows .
+        continue-on-error: true
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: List build output
+        run: Get-ChildItem build\windows\x64\runner\Release\
+
+      - name: Package zip
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath elyon-ai-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: elyon-ai-windows.zip
+
   # ── macOS DMG ─────────────────────────────────────────────────────
   build-macos:
     name: macOS DMG
@@ -146,7 +180,7 @@ jobs:
   # ── Release ───────────────────────────────────────────────────────
   release:
     name: Publish Release
-    needs: [build-android, build-linux, build-macos]
+    needs: [build-android, build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -163,6 +197,7 @@ jobs:
             artifacts/android-apk-arm32/app-armeabi-v7a-release.apk
             artifacts/linux-bundle/elyon-ai-linux.tar.gz
             artifacts/macos-dmg/elyon-ai-macos.dmg
+            artifacts/windows-build/elyon-ai-windows.zip
           name: Elyon AI ${{ github.ref_name }}
           body: |
             ## Elyon AI ${{ github.ref_name }}

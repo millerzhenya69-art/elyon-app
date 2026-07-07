@@ -34,6 +34,7 @@ dependencies:
   intl: ^0.19.0
   url_launcher: ^6.2.6
   file_picker: ^8.0.0
+  app_links: ^6.3.2
 
   # Desktop-only (guarded by Platform.isWindows checks in code)
   window_manager: ^0.3.9

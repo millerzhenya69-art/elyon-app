@@ -31,6 +31,12 @@ jobs:
       - name: Add Android platform
         run: flutter create --platforms=android . 2>/dev/null || true
 
+      - name: Add deep link intent-filter (elyonai://)
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          sed -i 's|</activity>|<intent-filter>\n            <action android:name="android.intent.action.VIEW"/>\n            <category android:name="android.intent.category.DEFAULT"/>\n            <category android:name="android.intent.category.BROWSABLE"/>\n            <data android:scheme="elyonai"/>\n        </intent-filter>\n    </activity>|' "$MANIFEST"
+          grep -A5 'scheme="elyonai"' "$MANIFEST"
+
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons || echo "Icons generation skipped"
 

@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:app_links/app_links.dart';
 import 'theme/app_theme.dart';
 import 'models/app_settings.dart';
 import 'providers/app_providers.dart';
@@ -59,6 +61,8 @@ class ElyonApp extends ConsumerStatefulWidget {
 class _ElyonAppState extends ConsumerState<ElyonApp> with WindowListener {
   final _navigatorKey = GlobalKey<NavigatorState>();
   bool _showSplash = true;
+  final _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSub;
 
   @override
   void initState() {
@@ -66,6 +70,9 @@ class _ElyonAppState extends ConsumerState<ElyonApp> with WindowListener {
     if (Platform.isWindows) {
       windowManager.addListener(this);
       windowManager.setPreventClose(true);
+    }
+    if (Platform.isAndroid || Platform.isIOS) {
+      _initDeepLinks();
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(settingsProvider.notifier).load(widget.initialSettings);
@@ -87,11 +94,46 @@ class _ElyonAppState extends ConsumerState<ElyonApp> with WindowListener {
 
   @override
   void dispose() {
+    _linkSub?.cancel();
     if (Platform.isWindows) {
       windowManager.removeListener(this);
       WindowsServices().dispose();
     }
     super.dispose();
+  }
+
+  // ── Deep link: elyonai://auth?token=... (from Telegram /auth) ────
+  Future<void> _initDeepLinks() async {
+    try {
+      final initialUri = await _appLinks.getInitialLink();
+      if (initialUri != null) _handleIncomingLink(initialUri);
+    } catch (_) {
+      // no initial link — normal cold start
+    }
+    _linkSub = _appLinks.uriLinkStream.listen(
+      _handleIncomingLink,
+      onError: (_) {},
+    );
+  }
+
+  void _handleIncomingLink(Uri uri) {
+    if (uri.scheme != 'elyonai') return;
+    final token = uri.queryParameters['token'];
+    if (token == null || token.isEmpty) return;
+    _completeTelegramLogin(token);
+  }
+
+  Future<void> _completeTelegramLogin(String token) async {
+    try {
+      final authService = ref.read(authServiceProvider);
+      final user = await authService.signInWithTelegramToken(token);
+      if (!mounted) return;
+      ref.read(userProvider.notifier).setUser(user);
+      _navigatorKey.currentState?.pushReplacementNamed('/app');
+    } catch (_) {
+      // Token invalid/expired/network error — user can still fall back to
+      // pasting the token manually on the Telegram sign-in screen.
+    }
   }
 
   @override

@@ -3,11 +3,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:app_links/app_links.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'theme/app_theme.dart';
 import 'models/app_settings.dart';
 import 'providers/app_providers.dart';
 import 'services/storage_service.dart';
 import 'services/windows_services.dart';
+import 'services/update_service.dart';
 import 'screens/auth_screen.dart';
 import 'screens/main_screen.dart';
 import 'screens/splash_screen.dart';
@@ -89,6 +91,7 @@ class _ElyonAppState extends ConsumerState<ElyonApp> with WindowListener {
       if (widget.initialSessions != null) {
         ref.read(sessionsProvider.notifier).load(widget.initialSessions!);
       }
+      _checkForUpdate();
     });
   }
 
@@ -139,6 +142,46 @@ class _ElyonAppState extends ConsumerState<ElyonApp> with WindowListener {
   @override
   Future<void> onWindowClose() async {
     if (Platform.isWindows) await WindowsServices().onWindowClose();
+  }
+
+  // ── Update check ───────────────────────────────────
+  Future<void> _checkForUpdate() async {
+    // Small delay so this never competes with the splash/auth flow for
+    // attention — update prompt shows a couple seconds after landing.
+    await Future.delayed(const Duration(seconds: 3));
+    if (!mounted) return;
+    final service = UpdateService();
+    final info = await service.checkForUpdate();
+    service.dispose();
+    if (info == null || !mounted) return;
+
+    final context = _navigatorKey.currentContext;
+    if (context == null) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Доступно обновление'),
+        content: Text(
+          'Вышла версия ${info.version}. Скачать и установить сейчас?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Позже'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              launchUrl(Uri.parse(info.downloadUrl),
+                  mode: LaunchMode.externalApplication);
+            },
+            child: const Text('Скачать'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

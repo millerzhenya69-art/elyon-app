@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 import '../models/chat_message.dart';
 import '../models/user_model.dart';
 
-const String _kBaseUrl = 'https://unkony-elyon-bot.hf.space';
+const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
 class AiService {
   AiService({http.Client? client}) : _client = client ?? http.Client();

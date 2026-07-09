@@ -1,7 +1,7 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-const String _kBaseUrl = 'https://unkony-elyon-bot.hf.space';
+const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
 /// Stats shown at the top of the admin panel.
 class AdminStats {

@@ -2,7 +2,7 @@
 import 'dart:io';
 import 'package:http/http.dart' as http;
 
-const String _kBaseUrl = 'https://unkony-elyon-bot.hf.space';
+const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
 /// Bump this on every release — must match the version actually built
 /// and uploaded to downloads/. Kept as a plain constant (no package_info_plus

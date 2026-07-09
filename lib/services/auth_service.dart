@@ -6,10 +6,14 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/user_model.dart';
 import '../services/storage_service.dart';
 
-const String _kBaseUrl = 'https://unkony-elyon-bot.hf.space';
+const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 const String _kGoogleClientId =
     '468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com';
-const int _kCallbackPort = 8765;
+// Port 0 = let the OS pick any free ephemeral port. Google explicitly allows
+// any port number for http://localhost / 127.0.0.1 redirect URIs on Desktop-
+// type OAuth clients — no need to pre-register a fixed port. A hardcoded
+// port (previously 8765) could permanently fail with SocketException if
+// anything else on the device already holds it.
 
 // ── Error types ───────────────────────────────────────────────────
 
@@ -137,9 +141,15 @@ class AuthService {
 
     HttpServer? server;
     try {
-      server = await HttpServer.bind(InternetAddress.loopbackIPv4, _kCallbackPort);
+      try {
+        server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      } on SocketException catch (e) {
+        throw AuthException(AuthErrorType.networkError,
+            'Could not start local sign-in server: ${e.message}');
+      }
       _googleServer = server;
 
+      final callbackPort = server.port;
       server.listen((req) async {
         final token = req.requestedUri.queryParameters['access_token'];
         req.response
@@ -173,7 +183,7 @@ class AuthService {
         }
       });
 
-      final redirectUri = 'http://localhost:$_kCallbackPort/callback';
+      final redirectUri = 'http://localhost:$callbackPort/callback';
       final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
         'client_id':     _kGoogleClientId,
         'redirect_uri':  redirectUri,

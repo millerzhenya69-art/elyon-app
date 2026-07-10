@@ -143,9 +143,18 @@ class AuthService {
     try {
       try {
         server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      } on SocketException catch (e) {
-        throw AuthException(AuthErrorType.networkError,
-            'Could not start local sign-in server: ${e.message}');
+      } on SocketException {
+        // Some Android OS/device combinations reject binding specifically to
+        // the loopback address (127.0.0.1) under certain network security
+        // policies, even though binding to all interfaces works fine. The
+        // OAuth redirect still targets "localhost", which routes to whatever
+        // the server is listening on, loopback or not.
+        try {
+          server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+        } on SocketException catch (e) {
+          throw AuthException(AuthErrorType.networkError,
+              'Could not start local sign-in server: ${e.message}');
+        }
       }
       _googleServer = server;
 

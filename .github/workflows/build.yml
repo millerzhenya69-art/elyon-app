@@ -91,7 +91,8 @@ jobs:
             libsecret-1-dev libsecret-1-0 \
             libjsoncpp-dev libglib2.0-dev \
             libkeybinder-3.0-dev \
-            libayatana-appindicator3-dev libnotify-dev
+            libayatana-appindicator3-dev libnotify-dev \
+            libwebkit2gtk-4.1-dev
 
       - name: Verify libsecret
         run: |
@@ -180,6 +181,14 @@ jobs:
 
       - name: Add macOS platform
         run: flutter create --platforms=macos . 2>/dev/null || true
+
+      - name: Bump macOS deployment target (flutter_web_auth_2 needs 10.15+)
+        run: |
+          sed -i '' "s/platform :osx, '10\.[0-9]*'/platform :osx, '10.15'/" macos/Podfile
+          grep "platform :osx" macos/Podfile
+          if [ -f macos/Runner/Configs/AppInfo.xcconfig ]; then
+            sed -i '' "s/MACOSX_DEPLOYMENT_TARGET = 10\.[0-9]*/MACOSX_DEPLOYMENT_TARGET = 10.15/" macos/Runner/Configs/AppInfo.xcconfig
+          fi
 
       - name: Build macOS release
         run: flutter build macos --release

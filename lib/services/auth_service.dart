@@ -18,7 +18,8 @@ const String _kGoogleClientId =
 // is what makes the custom-scheme (elyonai://) redirect below work without
 // needing a local server socket at all.
 // TODO: replace once created in Google Cloud Console.
-const String _kGoogleClientIdAndroid = 'REPLACE_WITH_ANDROID_CLIENT_ID';
+const String _kGoogleClientIdAndroid =
+    '468899724697-3im3p9klh1c5g141er49faog713bfged.apps.googleusercontent.com';
 const String _kGoogleCallbackScheme = 'elyonai';
 // Port 0 = let the OS pick any free ephemeral port. Google explicitly allows
 // any port number for http://localhost / 127.0.0.1 redirect URIs on Desktop-

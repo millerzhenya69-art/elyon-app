@@ -1,14 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import '../models/user_model.dart';
 import '../services/storage_service.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
+// Desktop / web OAuth client (loopback redirect flow, response_type=token).
 const String _kGoogleClientId =
     '468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com';
+// Android-specific OAuth client (package com.unkony.elyon + release keystore
+// SHA-1 registered in Google Cloud Console). Required because Android client
+// types validate the caller by app signature instead of redirect_uri, which
+// is what makes the custom-scheme (elyonai://) redirect below work without
+// needing a local server socket at all.
+// TODO: replace once created in Google Cloud Console.
+const String _kGoogleClientIdAndroid = 'REPLACE_WITH_ANDROID_CLIENT_ID';
+const String _kGoogleCallbackScheme = 'elyonai';
 // Port 0 = let the OS pick any free ephemeral port. Google explicitly allows
 // any port number for http://localhost / 127.0.0.1 redirect URIs on Desktop-
 // type OAuth clients — no need to pre-register a fixed port. A hardcoded
@@ -134,6 +145,51 @@ class AuthService {
   }
 
   Future<AppUser> signInWithGoogle() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      return _signInWithGoogleMobile();
+    }
+    return _signInWithGoogleDesktop();
+  }
+
+  // Mobile: no local server at all. flutter_web_auth_2 opens Chrome Custom
+  // Tabs / ASWebAuthenticationSession and the OS itself routes the
+  // elyonai://auth-callback redirect straight back into this call — this is
+  // what sidesteps the HttpServer.bind() failures seen on some Android
+  // devices entirely (no listening socket is ever created).
+  Future<AppUser> _signInWithGoogleMobile() async {
+    final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+      'client_id':     _kGoogleClientIdAndroid,
+      'redirect_uri':  '$_kGoogleCallbackScheme://auth-callback',
+      'response_type': 'token',
+      'scope':         'email profile openid',
+      'prompt':        'select_account',
+    });
+
+    String result;
+    try {
+      result = await FlutterWebAuth2.authenticate(
+        url: authUrl.toString(),
+        callbackUrlScheme: _kGoogleCallbackScheme,
+      );
+    } on PlatformException catch (e) {
+      if (e.code == 'CANCELED') {
+        throw const AuthException(AuthErrorType.cancelled,
+            'Google sign-in was cancelled.');
+      }
+      throw AuthException(AuthErrorType.networkError,
+          'Google sign-in failed: ${e.message ?? e.code}');
+    }
+
+    final token = Uri.splitQueryString(Uri.parse(result).fragment)['access_token'];
+    if (token == null) {
+      throw const AuthException(AuthErrorType.serverError,
+          'No access token returned by Google.');
+    }
+    return _verifyGoogleToken(token);
+  }
+
+  // Desktop: local loopback redirect server (works fine on Windows/Linux/macOS).
+  Future<AppUser> _signInWithGoogleDesktop() async {
     cancelGoogleSignIn();
 
     final completer = Completer<String>();

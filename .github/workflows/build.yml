@@ -29,7 +29,23 @@ jobs:
         run: flutter pub get
 
       - name: Add Android platform
-        run: flutter create --platforms=android . 2>/dev/null || true
+        run: flutter create --platforms=android --org com.unkony . 2>/dev/null || true
+
+      - name: Configure release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+          python3 .github/scripts/patch_gradle_signing.py
 
       - name: Add deep link intent-filter (elyonai://)
         run: |

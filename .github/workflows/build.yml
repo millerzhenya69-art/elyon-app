@@ -184,11 +184,11 @@ jobs:
 
       - name: Bump macOS deployment target (flutter_web_auth_2 needs 10.15+)
         run: |
+          sed -i '' "s/# *platform :osx, '10\.[0-9]*'/platform :osx, '10.15'/" macos/Podfile
           sed -i '' "s/platform :osx, '10\.[0-9]*'/platform :osx, '10.15'/" macos/Podfile
           grep "platform :osx" macos/Podfile
-          if [ -f macos/Runner/Configs/AppInfo.xcconfig ]; then
-            sed -i '' "s/MACOSX_DEPLOYMENT_TARGET = 10\.[0-9]*/MACOSX_DEPLOYMENT_TARGET = 10.15/" macos/Runner/Configs/AppInfo.xcconfig
-          fi
+          grep -rl "MACOSX_DEPLOYMENT_TARGET" macos/ | xargs sed -i '' "s/MACOSX_DEPLOYMENT_TARGET = 10\.[0-9]*/MACOSX_DEPLOYMENT_TARGET = 10.15/g"
+          grep -r "MACOSX_DEPLOYMENT_TARGET" macos/
 
       - name: Build macOS release
         run: flutter build macos --release

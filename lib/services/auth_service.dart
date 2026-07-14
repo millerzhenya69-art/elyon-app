@@ -9,17 +9,19 @@ import '../models/user_model.dart';
 import '../services/storage_service.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
-// Desktop / web OAuth client (loopback redirect flow, response_type=token).
+// Single OAuth client used for BOTH the Desktop loopback flow and the Mobile
+// custom-scheme flow. Client type in Google Cloud Console: "Web application"
+// ("Elyon AI Web"). We previously had a separate "Android"-type client for
+// mobile, but Android-type clients have NO redirect_uri field at all in
+// Google Cloud Console (only package name + SHA-1 fingerprint) - Google
+// cannot validate a custom-scheme redirect for that client type at all,
+// which is why mobile sign-in failed with "doesn't comply with Google's
+// OAuth 2.0 policy for keeping apps secure" / Error 400: invalid_request.
+// IMPORTANT: in Google Cloud Console -> Credentials -> Elyon AI Web (Web
+// application) you must add this to Authorized redirect URIs:
+//   elyonai://auth-callback
 const String _kGoogleClientId =
     '468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com';
-// Android-specific OAuth client (package com.unkony.elyon + release keystore
-// SHA-1 registered in Google Cloud Console). Required because Android client
-// types validate the caller by app signature instead of redirect_uri, which
-// is what makes the custom-scheme (elyonai://) redirect below work without
-// needing a local server socket at all.
-// TODO: replace once created in Google Cloud Console.
-const String _kGoogleClientIdAndroid =
-    '468899724697-3im3p9klh1c5g141er49faog713bfged.apps.googleusercontent.com';
 const String _kGoogleCallbackScheme = 'elyonai';
 // Port 0 = let the OS pick any free ephemeral port. Google explicitly allows
 // any port number for http://localhost / 127.0.0.1 redirect URIs on Desktop-
@@ -159,7 +161,7 @@ class AuthService {
   // devices entirely (no listening socket is ever created).
   Future<AppUser> _signInWithGoogleMobile() async {
     final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-      'client_id':     _kGoogleClientIdAndroid,
+      'client_id':     _kGoogleClientId,
       'redirect_uri':  '$_kGoogleCallbackScheme://auth-callback',
       'response_type': 'token',
       'scope':         'email profile openid',

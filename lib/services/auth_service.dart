@@ -9,25 +9,35 @@ import '../models/user_model.dart';
 import '../services/storage_service.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
-// Single OAuth client used for BOTH the Desktop loopback flow and the Mobile
-// custom-scheme flow. Client type in Google Cloud Console: "Web application"
-// ("Elyon AI Web"). We previously had a separate "Android"-type client for
-// mobile, but Android-type clients have NO redirect_uri field at all in
-// Google Cloud Console (only package name + SHA-1 fingerprint) - Google
-// cannot validate a custom-scheme redirect for that client type at all,
-// which is why mobile sign-in failed with "doesn't comply with Google's
-// OAuth 2.0 policy for keeping apps secure" / Error 400: invalid_request.
-// IMPORTANT: in Google Cloud Console -> Credentials -> Elyon AI Web (Web
-// application) you must add this to Authorized redirect URIs:
-//   elyonai://auth-callback
+
+// Desktop (Windows/Linux/macOS) loopback flow. Client type in Google Cloud
+// Console: "Web application" ("Elyon AI Web"). Web-application clients need
+// an EXACT registered redirect_uri match (Google does not wildcard-match
+// ports/paths for this client type the way it does for "Desktop app"
+// clients) - this is why it previously failed with redirect_uri_mismatch
+// for e.g. http://localhost:62565/callback.
+// REQUIRED in Google Cloud Console -> Credentials -> Elyon AI Web ->
+// Authorized redirect URIs: add exactly "http://localhost" (no port, no
+// path). Per Google's docs, registering a bare http://localhost entry
+// (no port specified) allows a match against ANY port at runtime - so we
+// send a bare "http://localhost:<port>" redirect_uri below (no extra path)
+// to match that registration exactly.
 const String _kGoogleClientId =
     '468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com';
+
+// Mobile (Android/iOS) custom-scheme flow. Client type in Google Cloud
+// Console: "Android" ("Android client 1", package com.unkony.elyon).
+// IMPORTANT: Android OAuth clients disable custom URI scheme redirects by
+// DEFAULT for security (this is what produced the "doesn't comply with
+// Google's OAuth 2.0 policy for keeping apps secure" / Error 400:
+// invalid_request page). You must explicitly turn this on:
+//   Google Cloud Console -> Credentials -> Android client 1 ->
+//   Advanced settings -> enable "Custom URI scheme"
+// Changes can take a few minutes to a few hours to propagate.
+const String _kGoogleClientIdAndroid =
+    '468899724697-3im3p9klh1c5g141er49faog713bfged.apps.googleusercontent.com';
+
 const String _kGoogleCallbackScheme = 'elyonai';
-// Port 0 = let the OS pick any free ephemeral port. Google explicitly allows
-// any port number for http://localhost / 127.0.0.1 redirect URIs on Desktop-
-// type OAuth clients — no need to pre-register a fixed port. A hardcoded
-// port (previously 8765) could permanently fail with SocketException if
-// anything else on the device already holds it.
 
 // ── Error types ───────────────────────────────────────────────────
 
@@ -72,9 +82,14 @@ class AuthService {
           if (signUp) 'last_name': lastName,
         }),
       ).timeout(const Duration(seconds: 20));
-    } catch (_) {
-      throw const AuthException(AuthErrorType.networkError,
-          'Connection failed. Check your internet connection.');
+    } catch (e) {
+      // Include the raw exception (type + message) so future reports are
+      // actionable instead of everything collapsing into one generic
+      // "check your internet" message that hides the real cause (TLS
+      // handshake failure on old Android versions, DNS issues, actual
+      // timeouts, etc).
+      throw AuthException(AuthErrorType.networkError,
+          'Connection failed. Check your internet connection. (${e.runtimeType}: $e)');
     }
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode == 200 && data['ok'] == true) {
@@ -114,9 +129,9 @@ class AuthService {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'token': token}),
       ).timeout(const Duration(seconds: 20));
-    } catch (_) {
-      throw const AuthException(AuthErrorType.networkError,
-          'Connection failed. Check your internet.');
+    } catch (e) {
+      throw AuthException(AuthErrorType.networkError,
+          'Connection failed. Check your internet. (${e.runtimeType}: $e)');
     }
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode == 200 && data['ok'] == true) {
@@ -156,12 +171,14 @@ class AuthService {
 
   // Mobile: no local server at all. flutter_web_auth_2 opens Chrome Custom
   // Tabs / ASWebAuthenticationSession and the OS itself routes the
-  // elyonai://auth-callback redirect straight back into this call — this is
-  // what sidesteps the HttpServer.bind() failures seen on some Android
-  // devices entirely (no listening socket is ever created).
+  // elyonai://auth-callback redirect straight back into this call. Requires
+  // the Android OAuth client's "Custom URI scheme" advanced setting to be
+  // turned on (see comment on _kGoogleClientIdAndroid above) - otherwise
+  // Google shows "doesn't comply with Google's OAuth 2.0 policy for
+  // keeping apps secure".
   Future<AppUser> _signInWithGoogleMobile() async {
     final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-      'client_id':     _kGoogleClientId,
+      'client_id':     _kGoogleClientIdAndroid,
       'redirect_uri':  '$_kGoogleCallbackScheme://auth-callback',
       'response_type': 'token',
       'scope':         'email profile openid',
@@ -203,11 +220,6 @@ class AuthService {
       try {
         server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       } on SocketException {
-        // Some Android OS/device combinations reject binding specifically to
-        // the loopback address (127.0.0.1) under certain network security
-        // policies, even though binding to all interfaces works fine. The
-        // OAuth redirect still targets "localhost", which routes to whatever
-        // the server is listening on, loopback or not.
         try {
           server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
         } on SocketException catch (e) {
@@ -239,7 +251,7 @@ class AuthService {
             if(hash.includes("access_token")){
               const p = new URLSearchParams(hash.replace("#",""));
               const t = p.get("access_token");
-              if(t) fetch("/callback?access_token="+encodeURIComponent(t))
+              if(t) fetch("/?access_token="+encodeURIComponent(t))
                 .then(()=>setTimeout(()=>window.close(),1000));
             } else {
               setTimeout(()=>window.close(),1500);
@@ -251,7 +263,13 @@ class AuthService {
         }
       });
 
-      final redirectUri = 'http://localhost:$callbackPort/callback';
+      // No path here (bare host:port) - must match EXACTLY what's registered
+      // in Google Cloud Console for the "Elyon AI Web" (Web application)
+      // client: a bare "http://localhost" entry (no port). Google matches a
+      // bare, port-less localhost registration against any port at runtime,
+      // but only if the rest of the URI (path) is also bare - adding "/callback"
+      // here is what caused the previous redirect_uri_mismatch.
+      final redirectUri = 'http://localhost:$callbackPort';
       final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
         'client_id':     _kGoogleClientId,
         'redirect_uri':  redirectUri,

@@ -19,6 +19,9 @@ dependencies:
   dio: ^5.4.0
   http: ^1.2.1
 
+  # PKCE code_verifier/code_challenge hashing for Google OAuth (Authorization Code flow)
+  crypto: ^3.0.3
+
   # Local storage
   shared_preferences: ^2.2.3
   flutter_secure_storage: ^9.2.2

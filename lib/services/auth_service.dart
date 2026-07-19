@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart' show PlatformException;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -10,30 +12,25 @@ import '../services/storage_service.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
-// Desktop (Windows/Linux/macOS) loopback flow. Client type in Google Cloud
-// Console: "Web application" ("Elyon AI Web"). Web-application clients need
-// an EXACT registered redirect_uri match (Google does not wildcard-match
-// ports/paths for this client type the way it does for "Desktop app"
-// clients) - this is why it previously failed with redirect_uri_mismatch
-// for e.g. http://localhost:62565/callback.
-// REQUIRED in Google Cloud Console -> Credentials -> Elyon AI Web ->
-// Authorized redirect URIs: add exactly "http://localhost" (no port, no
-// path). Per Google's docs, registering a bare http://localhost entry
-// (no port specified) allows a match against ANY port at runtime - so we
-// send a bare "http://localhost:<port>" redirect_uri below (no extra path)
-// to match that registration exactly.
+// Desktop (Windows/Linux/macOS) OAuth client. Type in Google Cloud Console:
+// "Web application" ("Elyon AI Web").
 const String _kGoogleClientId =
     '468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com';
 
-// Mobile (Android/iOS) custom-scheme flow. Client type in Google Cloud
-// Console: "Android" ("Android client 1", package com.unkony.elyon).
-// IMPORTANT: Android OAuth clients disable custom URI scheme redirects by
-// DEFAULT for security (this is what produced the "doesn't comply with
-// Google's OAuth 2.0 policy for keeping apps secure" / Error 400:
-// invalid_request page). You must explicitly turn this on:
-//   Google Cloud Console -> Credentials -> Android client 1 ->
-//   Advanced settings -> enable "Custom URI scheme"
-// Changes can take a few minutes to a few hours to propagate.
+// IMPORTANT: Google requires a client_secret for the token exchange even with
+// PKCE for "Web application"-type OAuth clients (this is a documented Google-
+// specific deviation from the PKCE spec, not a general OAuth requirement).
+// This is the same trade-off every desktop app embedding a Google client makes
+// (e.g. gcloud CLI) - the secret isn't meaningfully secret for an installed
+// app, but Google's API still asks for it on this client type.
+// Generate one at: Google Cloud Console -> Credentials -> Elyon AI Web ->
+// Client secrets -> Add secret, then paste it here.
+const String _kGoogleClientSecret = 'TODO_PASTE_CLIENT_SECRET_HERE';
+
+// Mobile (Android/iOS) OAuth client. Type in Google Cloud Console: "Android"
+// ("Android client 1", package com.unkony.elyon). Android-type clients are
+// public clients - Google does not issue (or require) a client_secret for
+// them at all, which is exactly what PKCE is designed for.
 const String _kGoogleClientIdAndroid =
     '468899724697-3im3p9klh1c5g141er49faog713bfged.apps.googleusercontent.com';
 
@@ -148,7 +145,65 @@ class AuthService {
     }
   }
 
-  // ── Google OAuth via local redirect server ────────────────────
+  // ── Google OAuth: Authorization Code + PKCE ────────────────────
+  //
+  // Google increasingly blocks the older implicit grant (response_type=token)
+  // for native/mobile apps with "doesn't comply with Google's OAuth 2.0
+  // policy for keeping apps secure" - this persisted even after enabling
+  // "Custom URI scheme" for the Android client, which only fixes a *different*
+  // restriction (custom-scheme redirect URIs, disabled by default on Android
+  // clients). Authorization Code + PKCE is Google's currently-recommended
+  // flow for native apps and avoids that policy wall entirely.
+
+  String _generateCodeVerifier() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(64, (_) => random.nextInt(256));
+    return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  String _codeChallengeFromVerifier(String verifier) {
+    final digest = sha256.convert(utf8.encode(verifier));
+    return base64Url.encode(digest.bytes).replaceAll('=', '');
+  }
+
+  Future<String> _exchangeCodeForToken({
+    required String code,
+    required String codeVerifier,
+    required String clientId,
+    required String redirectUri,
+    String? clientSecret,
+  }) async {
+    http.Response res;
+    try {
+      res = await _client.post(
+        Uri.parse('https://oauth2.googleapis.com/token'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'client_id':     clientId,
+          'code':          code,
+          'code_verifier': codeVerifier,
+          'grant_type':    'authorization_code',
+          'redirect_uri':  redirectUri,
+          if (clientSecret != null && clientSecret.isNotEmpty)
+            'client_secret': clientSecret,
+        },
+      ).timeout(const Duration(seconds: 15));
+    } catch (e) {
+      throw AuthException(AuthErrorType.networkError,
+          'Could not reach Google to finish sign-in. (${e.runtimeType}: $e)');
+    }
+    if (res.statusCode != 200) {
+      throw AuthException(AuthErrorType.serverError,
+          'Google token exchange failed (${res.statusCode}): ${res.body}');
+    }
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final accessToken = data['access_token'] as String?;
+    if (accessToken == null) {
+      throw const AuthException(AuthErrorType.serverError,
+          'No access token in Google response.');
+    }
+    return accessToken;
+  }
 
   HttpServer? _googleServer;
   Completer<String>? _googleCompleter;
@@ -171,18 +226,20 @@ class AuthService {
 
   // Mobile: no local server at all. flutter_web_auth_2 opens Chrome Custom
   // Tabs / ASWebAuthenticationSession and the OS itself routes the
-  // elyonai://auth-callback redirect straight back into this call. Requires
-  // the Android OAuth client's "Custom URI scheme" advanced setting to be
-  // turned on (see comment on _kGoogleClientIdAndroid above) - otherwise
-  // Google shows "doesn't comply with Google's OAuth 2.0 policy for
-  // keeping apps secure".
+  // elyonai://auth-callback redirect straight back into this call.
   Future<AppUser> _signInWithGoogleMobile() async {
+    final codeVerifier  = _generateCodeVerifier();
+    final codeChallenge = _codeChallengeFromVerifier(codeVerifier);
+    const redirectUri   = '$_kGoogleCallbackScheme://auth-callback';
+
     final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-      'client_id':     _kGoogleClientIdAndroid,
-      'redirect_uri':  '$_kGoogleCallbackScheme://auth-callback',
-      'response_type': 'token',
-      'scope':         'email profile openid',
-      'prompt':        'select_account',
+      'client_id':             _kGoogleClientIdAndroid,
+      'redirect_uri':          redirectUri,
+      'response_type':         'code',
+      'code_challenge':        codeChallenge,
+      'code_challenge_method': 'S256',
+      'scope':                 'email profile openid',
+      'prompt':                'select_account',
     });
 
     String result;
@@ -200,17 +257,30 @@ class AuthService {
           'Google sign-in failed: ${e.message ?? e.code}');
     }
 
-    final token = Uri.splitQueryString(Uri.parse(result).fragment)['access_token'];
-    if (token == null) {
+    final code = Uri.parse(result).queryParameters['code'];
+    if (code == null) {
       throw const AuthException(AuthErrorType.serverError,
-          'No access token returned by Google.');
+          'No authorization code returned by Google.');
     }
-    return _verifyGoogleToken(token);
+    final accessToken = await _exchangeCodeForToken(
+      code: code,
+      codeVerifier: codeVerifier,
+      clientId: _kGoogleClientIdAndroid,
+      redirectUri: redirectUri,
+      clientSecret: null, // Android-клиенты не имеют (и не требуют) секрета
+    );
+    return _verifyGoogleToken(accessToken);
   }
 
-  // Desktop: local loopback redirect server (works fine on Windows/Linux/macOS).
+  // Desktop: local loopback redirect server. With the Authorization Code
+  // flow, Google appends "?code=..." as a real query parameter (not a URL
+  // fragment like the old implicit flow did) - the server can read it
+  // directly from the request, no client-side JS hash-extraction needed.
   Future<AppUser> _signInWithGoogleDesktop() async {
     cancelGoogleSignIn();
+
+    final codeVerifier  = _generateCodeVerifier();
+    final codeChallenge = _codeChallengeFromVerifier(codeVerifier);
 
     final completer = Completer<String>();
     _googleCompleter = completer;
@@ -231,7 +301,8 @@ class AuthService {
 
       final callbackPort = server.port;
       server.listen((req) async {
-        final token = req.requestedUri.queryParameters['access_token'];
+        final code  = req.requestedUri.queryParameters['code'];
+        final error = req.requestedUri.queryParameters['error'];
         req.response
           ..statusCode = 200
           ..headers.contentType = ContentType.html
@@ -243,52 +314,49 @@ class AuthService {
             p{color:rgba(248,245,240,0.5);font-size:14px;}
           </style></head><body>
           <div>
-            <h2>✓ Signed in to Elyon AI</h2>
+            <h2>${error == null ? '✓ Signed in to Elyon AI' : '✗ Sign-in failed'}</h2>
             <p>You can close this tab and return to the app.</p>
           </div>
-          <script>
-            const hash = window.location.hash;
-            if(hash.includes("access_token")){
-              const p = new URLSearchParams(hash.replace("#",""));
-              const t = p.get("access_token");
-              if(t) fetch("/?access_token="+encodeURIComponent(t))
-                .then(()=>setTimeout(()=>window.close(),1000));
-            } else {
-              setTimeout(()=>window.close(),1500);
-            }
-          </script></body></html>''')
+          <script>setTimeout(()=>window.close(),1200);</script>
+          </body></html>''')
           ..close();
-        if (token != null && !completer.isCompleted) {
-          completer.complete(token);
+        if (code != null && !completer.isCompleted) {
+          completer.complete(code);
+        } else if (error != null && !completer.isCompleted) {
+          completer.completeError(
+            AuthException(AuthErrorType.serverError, 'Google sign-in error: $error'));
         }
       });
 
-      // No path here (bare host:port) - must match EXACTLY what's registered
-      // in Google Cloud Console for the "Elyon AI Web" (Web application)
-      // client: a bare "http://localhost" entry (no port). Google matches a
-      // bare, port-less localhost registration against any port at runtime,
-      // but only if the rest of the URI (path) is also bare - adding "/callback"
-      // here is what caused the previous redirect_uri_mismatch.
       final redirectUri = 'http://localhost:$callbackPort';
       final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-        'client_id':     _kGoogleClientId,
-        'redirect_uri':  redirectUri,
-        'response_type': 'token',
-        'scope':         'email profile openid',
-        'prompt':        'select_account',
+        'client_id':             _kGoogleClientId,
+        'redirect_uri':          redirectUri,
+        'response_type':         'code',
+        'code_challenge':        codeChallenge,
+        'code_challenge_method': 'S256',
+        'scope':                 'email profile openid',
+        'prompt':                'select_account',
       });
       if (!await launchUrl(authUrl, mode: LaunchMode.externalApplication)) {
         throw const AuthException(AuthErrorType.networkError,
             'Could not open browser for Google sign-in.');
       }
 
-      final token = await completer.future
+      final code = await completer.future
           .timeout(const Duration(minutes: 5), onTimeout: () {
         throw const AuthException(AuthErrorType.cancelled,
             'Google sign-in timed out. Please try again.');
       });
 
-      return await _verifyGoogleToken(token);
+      final accessToken = await _exchangeCodeForToken(
+        code: code,
+        codeVerifier: codeVerifier,
+        clientId: _kGoogleClientId,
+        redirectUri: redirectUri,
+        clientSecret: _kGoogleClientSecret,
+      );
+      return await _verifyGoogleToken(accessToken);
     } finally {
       await server?.close(force: true);
       if (_googleCompleter == completer) {

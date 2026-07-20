@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Локальные сборочные скрипты/секреты — НИКОГДА не коммитить.
+# Google client_secret и client ID передаются через --dart-define в
+# момент сборки, а не хардкодятся в исходниках (GitHub push
+# protection уже один раз заблокировал пуш из-за этого).
+build_release.local.ps1

@@ -14,25 +14,38 @@ const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
 // Desktop (Windows/Linux/macOS) OAuth client. Type in Google Cloud Console:
 // "Web application" ("Elyon AI Web").
-const String _kGoogleClientId =
-    '468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com';
+//
+// IMPORTANT: these three values are read from --dart-define at BUILD TIME,
+// never hardcoded in source. GitHub's push protection correctly blocked an
+// earlier commit that had the client_secret (and client IDs) as literal
+// strings here - client_secret is a real secret and must never sit in git
+// history, and even client IDs trip GitHub's scanner pattern. See
+// build_release.local.ps1 (gitignored, not committed) for the actual values
+// and the exact build commands.
+const String _kGoogleClientId = String.fromEnvironment(
+  'GOOGLE_CLIENT_ID_WEB',
+  defaultValue: '',
+);
 
-// IMPORTANT: Google requires a client_secret for the token exchange even with
-// PKCE for "Web application"-type OAuth clients (this is a documented Google-
-// specific deviation from the PKCE spec, not a general OAuth requirement).
-// This is the same trade-off every desktop app embedding a Google client makes
-// (e.g. gcloud CLI) - the secret isn't meaningfully secret for an installed
-// app, but Google's API still asks for it on this client type.
-// Generate one at: Google Cloud Console -> Credentials -> Elyon AI Web ->
-// Client secrets -> Add secret, then paste it here.
-const String _kGoogleClientSecret = 'TODO_PASTE_CLIENT_SECRET_HERE';
+// Google requires a client_secret for the token exchange even with PKCE for
+// "Web application"-type OAuth clients (a documented Google-specific
+// deviation from the PKCE spec, not a general OAuth requirement) - the same
+// trade-off every desktop app embedding a Google client makes (e.g. gcloud
+// CLI). Generate one at: Google Cloud Console -> Credentials -> Elyon AI Web
+// -> Client secrets -> Add secret.
+const String _kGoogleClientSecret = String.fromEnvironment(
+  'GOOGLE_CLIENT_SECRET_WEB',
+  defaultValue: '',
+);
 
 // Mobile (Android/iOS) OAuth client. Type in Google Cloud Console: "Android"
 // ("Android client 1", package com.unkony.elyon). Android-type clients are
 // public clients - Google does not issue (or require) a client_secret for
 // them at all, which is exactly what PKCE is designed for.
-const String _kGoogleClientIdAndroid =
-    '468899724697-3im3p9klh1c5g141er49faog713bfged.apps.googleusercontent.com';
+const String _kGoogleClientIdAndroid = String.fromEnvironment(
+  'GOOGLE_CLIENT_ID_ANDROID',
+  defaultValue: '',
+);
 
 const String _kGoogleCallbackScheme = 'elyonai';
 
@@ -117,8 +130,68 @@ class AuthService {
   }
 
   // ── Telegram token ────────────────────────────────────────────
-
+  //
+  // На мобильных платформах идём через flutter_web_auth_2 (браузер/WebView),
+  // а не прямым HTTP-запросом из Dart. На отдельных (обычно старых/бюджетных)
+  // Android-устройствах прямой сокет из Dart почему-то не резолвит тот же самый
+  // домен ("Failed host lookup") из-за каких-то device-specific сетевых
+  // ограничений/багов — проверено с разными DNS, с VPN и без, не помогло.
+  // Chrome Custom Tabs/WebView использует сетевой стек системного браузера, а не
+  // Dart-сокеты приложения, что обходит эту проблему целиком.
   Future<AppUser> signInWithTelegramToken(String token) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      return _signInWithTelegramTokenViaBrowser(token);
+    }
+    return _signInWithTelegramTokenDirect(token);
+  }
+
+  Future<AppUser> _signInWithTelegramTokenViaBrowser(String token) async {
+    final authUrl = Uri.https('elyon-ai-web.vercel.app', '/auth.html', {
+      'tg_token': token,
+      'native':   '1',
+    });
+
+    String result;
+    try {
+      result = await FlutterWebAuth2.authenticate(
+        url: authUrl.toString(),
+        callbackUrlScheme: _kGoogleCallbackScheme,
+      );
+    } on PlatformException catch (e) {
+      if (e.code == 'CANCELED') {
+        throw const AuthException(AuthErrorType.cancelled,
+            'Telegram sign-in was cancelled.');
+      }
+      throw AuthException(AuthErrorType.networkError,
+          'Telegram sign-in failed: ${e.message ?? e.code}');
+    }
+
+    final params = Uri.parse(result).queryParameters;
+    final error  = params['error'];
+    if (error != null && error.isNotEmpty) {
+      throw AuthException(AuthErrorType.tokenExpired, error);
+    }
+    final userId = params['user_id'];
+    if (userId == null || userId.isEmpty) {
+      throw const AuthException(AuthErrorType.serverError,
+          'No user data returned by Telegram sign-in.');
+    }
+
+    final user = _parseUser({
+      'user_id':    userId,
+      'email':      params['email']      ?? '',
+      'first_name': params['first_name'] ?? '',
+      'last_name':  params['last_name']  ?? '',
+      'avatar':     params['avatar']     ?? '',
+      'provider':   params['provider']   ?? 'telegram',
+      'username':   params['username']   ?? '',
+      'sub_type':   params['sub_type']   ?? 'none',
+    });
+    await storage.saveUser(user);
+    return user;
+  }
+
+  Future<AppUser> _signInWithTelegramTokenDirect(String token) async {
     http.Response res;
     try {
       res = await _client.post(

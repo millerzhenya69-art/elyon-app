@@ -58,7 +58,15 @@ jobs:
 
       # --split-per-abi builds arm32, arm64, x86_64 in one command
       - name: Build APKs (all ABIs)
-        run: flutter build apk --release --split-per-abi
+        env:
+          GOOGLE_CLIENT_ID_WEB: ${{ secrets.GOOGLE_CLIENT_ID_WEB }}
+          GOOGLE_CLIENT_SECRET_WEB: ${{ secrets.GOOGLE_CLIENT_SECRET_WEB }}
+          GOOGLE_CLIENT_ID_ANDROID: ${{ secrets.GOOGLE_CLIENT_ID_ANDROID }}
+        run: |
+          flutter build apk --release --split-per-abi \
+            --dart-define=GOOGLE_CLIENT_ID_WEB="$GOOGLE_CLIENT_ID_WEB" \
+            --dart-define=GOOGLE_CLIENT_SECRET_WEB="$GOOGLE_CLIENT_SECRET_WEB" \
+            --dart-define=GOOGLE_CLIENT_ID_ANDROID="$GOOGLE_CLIENT_ID_ANDROID"
 
       - name: List APK outputs
         run: ls -lh build/app/outputs/flutter-apk/
@@ -114,7 +122,14 @@ jobs:
       - name: Build Linux release
         env:
           PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-        run: flutter build linux --release
+          GOOGLE_CLIENT_ID_WEB: ${{ secrets.GOOGLE_CLIENT_ID_WEB }}
+          GOOGLE_CLIENT_SECRET_WEB: ${{ secrets.GOOGLE_CLIENT_SECRET_WEB }}
+          GOOGLE_CLIENT_ID_ANDROID: ${{ secrets.GOOGLE_CLIENT_ID_ANDROID }}
+        run: |
+          flutter build linux --release \
+            --dart-define=GOOGLE_CLIENT_ID_WEB="$GOOGLE_CLIENT_ID_WEB" \
+            --dart-define=GOOGLE_CLIENT_SECRET_WEB="$GOOGLE_CLIENT_SECRET_WEB" \
+            --dart-define=GOOGLE_CLIENT_ID_ANDROID="$GOOGLE_CLIENT_ID_ANDROID"
 
       - name: Package tar.gz
         run: |
@@ -149,7 +164,15 @@ jobs:
         continue-on-error: true
 
       - name: Build Windows release
-        run: flutter build windows --release
+        env:
+          GOOGLE_CLIENT_ID_WEB: ${{ secrets.GOOGLE_CLIENT_ID_WEB }}
+          GOOGLE_CLIENT_SECRET_WEB: ${{ secrets.GOOGLE_CLIENT_SECRET_WEB }}
+          GOOGLE_CLIENT_ID_ANDROID: ${{ secrets.GOOGLE_CLIENT_ID_ANDROID }}
+        run: >
+          flutter build windows --release
+          --dart-define=GOOGLE_CLIENT_ID_WEB=$env:GOOGLE_CLIENT_ID_WEB
+          --dart-define=GOOGLE_CLIENT_SECRET_WEB=$env:GOOGLE_CLIENT_SECRET_WEB
+          --dart-define=GOOGLE_CLIENT_ID_ANDROID=$env:GOOGLE_CLIENT_ID_ANDROID
 
       - name: List build output
         run: Get-ChildItem build\windows\x64\runner\Release\
@@ -191,7 +214,15 @@ jobs:
           grep -r "MACOSX_DEPLOYMENT_TARGET" macos/
 
       - name: Build macOS release
-        run: flutter build macos --release
+        env:
+          GOOGLE_CLIENT_ID_WEB: ${{ secrets.GOOGLE_CLIENT_ID_WEB }}
+          GOOGLE_CLIENT_SECRET_WEB: ${{ secrets.GOOGLE_CLIENT_SECRET_WEB }}
+          GOOGLE_CLIENT_ID_ANDROID: ${{ secrets.GOOGLE_CLIENT_ID_ANDROID }}
+        run: |
+          flutter build macos --release \
+            --dart-define=GOOGLE_CLIENT_ID_WEB="$GOOGLE_CLIENT_ID_WEB" \
+            --dart-define=GOOGLE_CLIENT_SECRET_WEB="$GOOGLE_CLIENT_SECRET_WEB" \
+            --dart-define=GOOGLE_CLIENT_ID_ANDROID="$GOOGLE_CLIENT_ID_ANDROID"
 
       - name: Find and list .app
         run: |

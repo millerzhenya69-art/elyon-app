@@ -50,8 +50,24 @@ jobs:
       - name: Add deep link intent-filter (elyonai://)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
-          sed -i 's|</activity>|<intent-filter>\n            <action android:name="android.intent.action.VIEW"/>\n            <category android:name="android.intent.category.DEFAULT"/>\n            <category android:name="android.intent.category.BROWSABLE"/>\n            <data android:scheme="elyonai"/>\n        </intent-filter>\n    </activity>|' "$MANIFEST"
-          grep -A5 'scheme="elyonai"' "$MANIFEST"
+
+          # 1) MainActivity: обычный deep link для elyonai://auth?token=...
+          #    (когда пользователь открывает ссылку из бота напрямую в браузере,
+          #    без flutter_web_auth_2 — см. auth.html non-native ветку).
+          #    host="auth" отличает его от CallbackActivity ниже, чтобы Android
+          #    не показывал диалог выбора "Открыть с помощью..." при получении
+          #    elyonai://auth-callback (иначе оба компонента бы совпадали).
+          sed -i 's|</activity>|<intent-filter>\n            <action android:name="android.intent.action.VIEW"/>\n            <category android:name="android.intent.category.DEFAULT"/>\n            <category android:name="android.intent.category.BROWSABLE"/>\n            <data android:scheme="elyonai" android:host="auth"/>\n        </intent-filter>\n    </activity>|' "$MANIFEST"
+
+          # 2) flutter_web_auth_2 ТРЕБУЕТ отдельный, специальный компонент
+          #    com.linusu.flutter_web_auth_2.CallbackActivity — без него плагин
+          #    физически не может поймать редирект elyonai://auth-callback,
+          #    независимо от того, что настроено в MainActivity. Именно это
+          #    было причиной всех "Google/Telegram sign-in was cancelled" и
+          #    невозможности поймать колбэк вообще.
+          sed -i 's|</application>|<activity\n            android:name="com.linusu.flutter_web_auth_2.CallbackActivity"\n            android:exported="true"\n            android:taskAffinity="">\n            <intent-filter android:label="flutter_web_auth_2">\n                <action android:name="android.intent.action.VIEW"/>\n                <category android:name="android.intent.category.DEFAULT"/>\n                <category android:name="android.intent.category.BROWSABLE"/>\n                <data android:scheme="elyonai" android:host="auth-callback"/>\n            </intent-filter>\n        </activity>\n    </application>|' "$MANIFEST"
+
+          grep -B2 -A6 'scheme="elyonai"' "$MANIFEST"
 
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons || echo "Icons generation skipped"

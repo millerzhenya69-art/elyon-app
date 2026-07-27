@@ -38,14 +38,10 @@ const String _kGoogleClientSecret = String.fromEnvironment(
   defaultValue: '',
 );
 
-// Mobile (Android/iOS) OAuth client. Type in Google Cloud Console: "Android"
-// ("Android client 1", package com.unkony.elyon). Android-type clients are
-// public clients - Google does not issue (or require) a client_secret for
-// them at all, which is exactly what PKCE is designed for.
-const String _kGoogleClientIdAndroid = String.fromEnvironment(
-  'GOOGLE_CLIENT_ID_ANDROID',
-  defaultValue: '',
-);
+// Мобильным не нужен отдельный Google-клиент вообще — Google там
+// общается только с сайтом (auth.html), приложение лишь открывает страницу
+// через flutter_web_auth_2 и получает готовый результат через
+// elyonai://auth-callback (см. signInWithGoogle ниже).
 
 const String _kGoogleCallbackScheme = 'elyonai';
 
@@ -218,15 +214,85 @@ class AuthService {
     }
   }
 
-  // ── Google OAuth: Authorization Code + PKCE ────────────────────
+  // ── Google OAuth ─────────────────────────────────────────────
   //
-  // Google increasingly blocks the older implicit grant (response_type=token)
-  // for native/mobile apps with "doesn't comply with Google's OAuth 2.0
-  // policy for keeping apps secure" - this persisted even after enabling
-  // "Custom URI scheme" for the Android client, which only fixes a *different*
-  // restriction (custom-scheme redirect URIs, disabled by default on Android
-  // clients). Authorization Code + PKCE is Google's currently-recommended
-  // flow for native apps and avoids that policy wall entirely.
+  // Mobile: точно так же, как Telegram выше — через flutter_web_auth_2
+  // открываем auth.html в системном браузере/WebView, а сама страница
+  // делает весь Google OAuth целиком в своём контексте (стандартный,
+  // самый обычный случай для Google — обычный https-redirect_uri на
+  // Web-клиента, без custom URI scheme, без типа клиента "Android", без
+  // PKCE в приложении), а приложение получает только готовый результат
+  // через elyonai://auth-callback.
+  //
+  // Причина перехода на это: implicit-флоу и затем PKCE через отдельный
+  // Android-клиент стабильно падали с "doesn't comply with Google's OAuth 2.0
+  // policy for keeping apps secure" ещё ДО того, как доходило до нашего колбэка
+  // (ошибка показывалась на экране accounts.google.com до любого редиректа) —
+  // то есть это было ограничение со стороны самого Google именно для
+  // native/mobile OAuth-клиентов, а не баг в нашем коде перехвата колбэка
+  // (тот баг отдельно нашли и починили — недостающий CallbackActivity для
+  // flutter_web_auth_2 в AndroidManifest.xml, что подтвердилось тем, что
+  // Telegram через тот же механизм заработал после фикса, а Google — нет,
+  // потому что проблема вообще до редиректа, на стороне самого Google).
+  //
+  // Desktop оставлен как есть (PKCE через локальный loopback-сервер) —
+  // там проблема была в database.cursor на бэкенде (уже починена), а не в
+  // самом OAuth-флоу.
+
+  Future<AppUser> signInWithGoogle() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      return _signInWithGoogleMobileViaBrowser();
+    }
+    return _signInWithGoogleDesktop();
+  }
+
+  Future<AppUser> _signInWithGoogleMobileViaBrowser() async {
+    final authUrl = Uri.https('elyon-ai-web.vercel.app', '/auth.html', {
+      'native':   '1',
+      'provider': 'google',
+    });
+
+    String result;
+    try {
+      result = await FlutterWebAuth2.authenticate(
+        url: authUrl.toString(),
+        callbackUrlScheme: _kGoogleCallbackScheme,
+      );
+    } on PlatformException catch (e) {
+      if (e.code == 'CANCELED') {
+        throw const AuthException(AuthErrorType.cancelled,
+            'Google sign-in was cancelled.');
+      }
+      throw AuthException(AuthErrorType.networkError,
+          'Google sign-in failed: ${e.message ?? e.code}');
+    }
+
+    final params = Uri.parse(result).queryParameters;
+    final error  = params['error'];
+    if (error != null && error.isNotEmpty) {
+      throw AuthException(AuthErrorType.serverError, error);
+    }
+    final userId = params['user_id'];
+    if (userId == null || userId.isEmpty) {
+      throw const AuthException(AuthErrorType.serverError,
+          'No user data returned by Google sign-in.');
+    }
+
+    final user = _parseUser({
+      'user_id':    userId,
+      'email':      params['email']      ?? '',
+      'first_name': params['first_name'] ?? '',
+      'last_name':  params['last_name']  ?? '',
+      'avatar':     params['avatar']     ?? '',
+      'provider':   params['provider']   ?? 'google',
+      'username':   params['username']   ?? '',
+      'sub_type':   params['sub_type']   ?? 'none',
+    });
+    await storage.saveUser(user);
+    return user;
+  }
+
+  // ── Desktop: Authorization Code + PKCE ──────────────────────────
 
   String _generateCodeVerifier() {
     final random = Random.secure();
@@ -288,61 +354,6 @@ class AuthService {
     _googleServer?.close(force: true);
     _googleServer = null;
     _googleCompleter = null;
-  }
-
-  Future<AppUser> signInWithGoogle() async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      return _signInWithGoogleMobile();
-    }
-    return _signInWithGoogleDesktop();
-  }
-
-  // Mobile: no local server at all. flutter_web_auth_2 opens Chrome Custom
-  // Tabs / ASWebAuthenticationSession and the OS itself routes the
-  // elyonai://auth-callback redirect straight back into this call.
-  Future<AppUser> _signInWithGoogleMobile() async {
-    final codeVerifier  = _generateCodeVerifier();
-    final codeChallenge = _codeChallengeFromVerifier(codeVerifier);
-    const redirectUri   = '$_kGoogleCallbackScheme://auth-callback';
-
-    final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-      'client_id':             _kGoogleClientIdAndroid,
-      'redirect_uri':          redirectUri,
-      'response_type':         'code',
-      'code_challenge':        codeChallenge,
-      'code_challenge_method': 'S256',
-      'scope':                 'email profile openid',
-      'prompt':                'select_account',
-    });
-
-    String result;
-    try {
-      result = await FlutterWebAuth2.authenticate(
-        url: authUrl.toString(),
-        callbackUrlScheme: _kGoogleCallbackScheme,
-      );
-    } on PlatformException catch (e) {
-      if (e.code == 'CANCELED') {
-        throw const AuthException(AuthErrorType.cancelled,
-            'Google sign-in was cancelled.');
-      }
-      throw AuthException(AuthErrorType.networkError,
-          'Google sign-in failed: ${e.message ?? e.code}');
-    }
-
-    final code = Uri.parse(result).queryParameters['code'];
-    if (code == null) {
-      throw const AuthException(AuthErrorType.serverError,
-          'No authorization code returned by Google.');
-    }
-    final accessToken = await _exchangeCodeForToken(
-      code: code,
-      codeVerifier: codeVerifier,
-      clientId: _kGoogleClientIdAndroid,
-      redirectUri: redirectUri,
-      clientSecret: null, // Android-клиенты не имеют (и не требуют) секрета
-    );
-    return _verifyGoogleToken(accessToken);
   }
 
   // Desktop: local loopback redirect server. With the Authorization Code

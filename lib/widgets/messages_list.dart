@@ -286,10 +286,16 @@ class _AiContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MarkdownBody(
-      data:            content,
-      selectable:      true,
-      styleSheet: MarkdownStyleSheet(
+    // SelectionArea — без него flutter_markdown рендерит каждый блок (абзац,
+    // строку списка и т.д.) как ОТДЕЛЬНый SelectableText, поэтому Ctrl+A/выделение
+    // мышью не выходило за пределы одного блока/строки. SelectionArea
+    // координирует выделение между всеми этими вложенными текстовыми
+    // виджетами, делая весь ответ выделяемым как единое целое.
+    return SelectionArea(
+      child: MarkdownBody(
+        data:            content,
+        selectable:      false,
+        styleSheet: MarkdownStyleSheet(
         p: TextStyle(
           fontFamily: 'DMSans',
           fontSize: 14,
@@ -340,6 +346,7 @@ class _AiContent extends StatelessWidget {
         ),
         listBullet: TextStyle(color: textColor),
         tableBody: TextStyle(color: textColor, fontSize: 13),
+        ),
       ),
     );
   }

@@ -1,5 +1,6 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'retry_http_client.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
@@ -91,7 +92,7 @@ class AdminException implements Exception {
 /// Talks to the bot.py Flask admin endpoints. Every call requires
 /// X-Admin-Id header matching OWNER_ID on the backend.
 class AdminService {
-  AdminService({http.Client? client}) : _client = client ?? http.Client();
+  AdminService({http.Client? client}) : _client = client ?? RetryHttpClient();
   final http.Client _client;
 
   Map<String, String> _headers(String adminId) => {

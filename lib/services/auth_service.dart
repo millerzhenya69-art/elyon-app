@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import '../models/user_model.dart';
 import '../services/storage_service.dart';
+import 'retry_http_client.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
@@ -63,7 +64,7 @@ class AuthException implements Exception {
 
 class AuthService {
   AuthService({http.Client? client, required this.storage})
-      : _client = client ?? http.Client();
+      : _client = client ?? RetryHttpClient();
   final http.Client _client;
   final StorageService storage;
 

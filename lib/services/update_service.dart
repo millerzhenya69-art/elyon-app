@@ -1,6 +1,7 @@
 ﻿import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'retry_http_client.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
@@ -16,7 +17,7 @@ class UpdateInfo {
 }
 
 class UpdateService {
-  UpdateService({http.Client? client}) : _client = client ?? http.Client();
+  UpdateService({http.Client? client}) : _client = client ?? RetryHttpClient();
   final http.Client _client;
 
   String get _platformKey {

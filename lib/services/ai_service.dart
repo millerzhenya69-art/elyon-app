@@ -3,11 +3,12 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/chat_message.dart';
 import '../models/user_model.dart';
+import 'retry_http_client.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
 class AiService {
-  AiService({http.Client? client}) : _client = client ?? http.Client();
+  AiService({http.Client? client}) : _client = client ?? RetryHttpClient();
   final http.Client _client;
 
   static String _modelId(SubscriptionTier tier) {

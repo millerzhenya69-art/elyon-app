@@ -97,7 +97,7 @@ class DohHttpClient extends IOClient {
       }
       final socket = await Socket.connect(target, uri.port,
           timeout: const Duration(seconds: 15));
-      return ConnectionTask.fromSocket(socket, () => socket.destroy());
+      return ConnectionTask.fromSocket(Future.value(socket), () => socket.destroy());
     };
     return client;
   }

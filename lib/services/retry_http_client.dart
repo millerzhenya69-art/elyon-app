@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 /// Wraps an [http.Client] and automatically retries requests that fail with
@@ -44,8 +45,10 @@ class RetryHttpClient extends http.BaseClient {
       try {
         return await _inner.send(toSend);
       } on SocketException catch (e) {
+        debugPrint('[ElyonNet] attempt ${attempt + 1}/$maxAttempts SocketException: $e');
         lastError = e;
       } on http.ClientException catch (e) {
+        debugPrint('[ElyonNet] attempt ${attempt + 1}/$maxAttempts ClientException: $e');
         lastError = e;
       }
       if (attempt < maxAttempts - 1) {

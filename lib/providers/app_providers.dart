@@ -1,4 +1,5 @@
-﻿import 'package:flutter_riverpod/flutter_riverpod.dart';
+﻿import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/app_settings.dart';
 import '../models/chat_message.dart';
 import '../models/user_model.dart';
@@ -178,7 +179,8 @@ class ActiveChatNotifier extends Notifier<ChatSession?> {
             : '⚠ ${e.message}',
         stillStreaming: false,
       );
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[ElyonNet] sendMessage failed: ${e.runtimeType}: $e\n$st');
       _replaceStreaming(
         thinkingMsg.id,
         '⚠ Connection error. Please try again.',
@@ -240,7 +242,8 @@ class ActiveChatNotifier extends Notifier<ChatSession?> {
             : '⚠ ${e.message}',
         stillStreaming: false,
       );
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[ElyonNet] sendMessageWithFile failed: ${e.runtimeType}: $e\n$st');
       _replaceStreaming(
         thinkingMsg.id,
         '⚠ Connection error while analyzing the file. Please try again.',

@@ -2,23 +2,21 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'doh_http_client.dart';
 
 /// Wraps an [http.Client] and automatically retries requests that fail with
 /// a transient network-level error (SocketException, connection reset, etc).
 ///
-/// Works around DNS/socket flakiness observed on some (older/budget)
-/// Android devices where the OS resolver intermittently fails for Dart's
-/// own `dart:io` socket layer — "Failed host lookup" — even though the same
-/// domain resolves fine in the system browser at the same moment, and even
-/// after trying different DNS providers with/without VPN. Most of these
-/// failures are transient and succeed on a near-immediate retry.
-///
-/// This does NOT fix the underlying device/OS issue (out of our control),
-/// it just masks single transient blips so the user isn't shown an error
-/// for something that would have worked half a second later.
+/// The inner client defaults to [DohHttpClient], which resolves via DNS-over-
+/// HTTPS instead of the carrier/OS resolver — confirmed via on-device logcat
+/// (2026-07-31) that some mobile carriers hard-block DNS for this domain
+/// ("Failed host lookup ... errno = 7", answered instantly, not a timeout),
+/// so retrying alone never helped on those networks. The retry loop here
+/// still matters for genuinely transient blips (dropped packet, brief
+/// congestion) on networks where DoH itself succeeds.
 class RetryHttpClient extends http.BaseClient {
   RetryHttpClient({http.Client? inner, this.maxAttempts = 3})
-      : _inner = inner ?? http.Client();
+      : _inner = inner ?? DohHttpClient();
 
   final http.Client _inner;
   final int maxAttempts;

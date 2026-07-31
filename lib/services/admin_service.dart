@@ -4,6 +4,15 @@ import 'retry_http_client.dart';
 
 const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
 
+// Compiled in at build time via --dart-define=ADMIN_SECRET=... (see build.yml).
+// NOTE: this still ends up inside the shipped APK/exe and can be extracted by
+// decompiling the binary — it only stops random/anonymous requests to the
+// admin endpoints, it does NOT protect against someone who has the release
+// build and reverse-engineers it. Real protection would mean verifying the
+// caller is actually the Telegram owner server-side (signed Telegram auth
+// data), not a static compiled-in string.
+const String _kAdminSecret = String.fromEnvironment('ADMIN_SECRET');
+
 /// Stats shown at the top of the admin panel.
 class AdminStats {
   const AdminStats({
@@ -97,7 +106,7 @@ class AdminService {
 
   Map<String, String> _headers(String adminId) => {
         'Content-Type': 'application/json',
-        'X-Admin-Id':   adminId,
+        'X-Admin-Secret': _kAdminSecret,
       };
 
   Future<AdminStats> fetchStats() async {

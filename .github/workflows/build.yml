@@ -47,6 +47,21 @@ jobs:
           EOF
           python3 .github/scripts/patch_gradle_signing.py
 
+      - name: Add required Android permissions
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+
+          # flutter create's default manifest does NOT include INTERNET —
+          # without it every network call fails instantly at the OS level
+          # (Dart sees this as "Failed host lookup", indistinguishable from a
+          # DNS/carrier problem, which cost a lot of debugging time to track
+          # down to this on 2026-08-02). ACCESS_NETWORK_STATE is added too
+          # since several plugins (connectivity checks) expect it.
+          grep -q 'android.permission.INTERNET' "$MANIFEST" || \
+            sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>\n    <application|' "$MANIFEST"
+
+          grep -B1 -A1 'INTERNET\|ACCESS_NETWORK_STATE' "$MANIFEST"
+
       - name: Add deep link intent-filter (elyonai://)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml

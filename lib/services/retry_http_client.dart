@@ -7,18 +7,23 @@ import 'doh_http_client.dart';
 /// Wraps an [http.Client] and automatically retries requests that fail with
 /// a transient network-level error (SocketException, connection reset, etc).
 ///
-/// The inner client defaults to [DohHttpClient], which resolves via DNS-over-
-/// HTTPS instead of the carrier/OS resolver — confirmed via on-device logcat
-/// (2026-07-31) that some mobile carriers hard-block DNS for this domain
-/// ("Failed host lookup ... errno = 7", answered instantly, not a timeout),
-/// so retrying alone never helped on those networks. The retry loop here
-/// still matters for genuinely transient blips (dropped packet, brief
-/// congestion) on networks where DoH itself succeeds.
+/// Uses a plain system [http.Client] by default — identical to what curl/the
+/// desktop builds use, which is known-good (verified directly against the
+/// server on 2026-08-02). [DohHttpClient] (custom connectionFactory, raw
+/// socket + manual TLS) is kept only as a fallback for a *confirmed* DNS
+/// block ("Failed host lookup ... errno = 7", seen on at least one mobile
+/// carrier on 2026-07-31) — it is NOT used as the default path any more,
+/// because routing every request through it turned out to trigger an
+/// unrelated 308 from Vercel that the plain client never produces (root
+/// cause not fully understood, likely an ALPN/protocol quirk from manually
+/// wrapping the socket in TLS instead of letting HttpClient negotiate it).
 class RetryHttpClient extends http.BaseClient {
-  RetryHttpClient({http.Client? inner, this.maxAttempts = 3})
-      : _inner = inner ?? DohHttpClient();
+  RetryHttpClient({http.Client? inner, http.Client? dohFallback, this.maxAttempts = 3})
+      : _inner = inner ?? http.Client(),
+        _dohFallback = dohFallback ?? DohHttpClient();
 
   final http.Client _inner;
+  final http.Client _dohFallback;
   final int maxAttempts;
 
   static const _delays = [
@@ -26,6 +31,11 @@ class RetryHttpClient extends http.BaseClient {
     Duration(milliseconds: 800),
     Duration(milliseconds: 1500),
   ];
+
+  static bool _looksLikeDnsBlock(SocketException e) {
+    final msg = e.message.toLowerCase();
+    return msg.contains('failed host lookup') || msg.contains('no address associated');
+  }
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
@@ -38,15 +48,22 @@ class RetryHttpClient extends http.BaseClient {
     }
 
     Object? lastError;
+    var useDoh = false;
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
       final toSend = _cloneRequest(request, bodyBytes);
+      final client = useDoh ? _dohFallback : _inner;
       try {
-        return await _inner.send(toSend);
+        return await client.send(toSend);
       } on SocketException catch (e) {
-        debugPrint('[ElyonNet] attempt ${attempt + 1}/$maxAttempts SocketException: $e');
+        debugPrint('[ElyonNet] attempt ${attempt + 1}/$maxAttempts '
+            '(${useDoh ? "DoH" : "system"} resolver) SocketException: $e');
+        if (!useDoh && _looksLikeDnsBlock(e)) {
+          useDoh = true; // confirmed DNS-level failure -> switch strategy for remaining attempts
+        }
         lastError = e;
       } on http.ClientException catch (e) {
-        debugPrint('[ElyonNet] attempt ${attempt + 1}/$maxAttempts ClientException: $e');
+        debugPrint('[ElyonNet] attempt ${attempt + 1}/$maxAttempts '
+            '(${useDoh ? "DoH" : "system"} resolver) ClientException: $e');
         lastError = e;
       }
       if (attempt < maxAttempts - 1) {
@@ -66,5 +83,8 @@ class RetryHttpClient extends http.BaseClient {
   }
 
   @override
-  void close() => _inner.close();
+  void close() {
+    _inner.close();
+    _dohFallback.close();
+  }
 }

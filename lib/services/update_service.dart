@@ -3,7 +3,10 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'retry_http_client.dart';
 
-const String _kBaseUrl = 'https://elyon-ai-web.vercel.app/api/relay';
+// Статический файл на сайте, без прохождения через /api/relay и без зависимости от
+// HF/бота вообще — обновляется одним коммитом в Elyon-AI-Web-repo (см. push_release.ps1),
+// без правки кода бота и без второго push в aibot на каждый релиз.
+const String _kVersionUrl = 'https://elyon-ai-web.vercel.app/downloads/version.json';
 
 /// Bump this on every release — must match the version actually built
 /// and uploaded to downloads/. Kept as a plain constant (no package_info_plus
@@ -37,7 +40,7 @@ class UpdateService {
   Future<UpdateInfo?> checkForUpdate() async {
     try {
       final response = await _client
-          .get(Uri.parse('$_kBaseUrl/api/app_version'))
+          .get(Uri.parse(_kVersionUrl))
           .timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) return null;
 
